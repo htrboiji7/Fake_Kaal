@@ -1,16 +1,15 @@
-import os
-import logging
+import os, logging, asyncio
 from threading import Thread
 from datetime import datetime, timedelta
-from flask import Flask
+from flask import Flask, send_file
 from pymongo import MongoClient
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from io import BytesIO
 
 app = Flask(__name__)
-@app.route('/')
-def home():
-    return "Bot is running"
+@app.route('/') 
+def home(): return "Ultra Advanced KaaL Bomber Running"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -19,193 +18,199 @@ def run_flask():
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 ADMINS = [1849178309, 8286480139]
-REQUIRED_CHANNELS = ["Cric_Fantast07","Htr_Edits","Paisa_Looterss","KaalBomber"]
+CHANNELS = ["Cric_Fantast07","Htr_Edits","Paisa_Looterss","KaalBomber"]
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-client = None
-users = None
+db = None
 if MONGO_URI:
     try:
-        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=8000)
-        users = client["kaalbomber"]["users"]
-    except:
-        pass
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
+        db = client.kaalbomber
+        users = db.users
+        attacks = db.attacks
+        banned = db.banned
+    except: pass
 
 user_state = {}
+attack_mode = {}
 
-def get_user_doc(uid):
-    if not users:
-        return {}
+def get_user(uid):
+    if not db: return {}
     doc = users.find_one({"user_id": uid})
     if not doc:
         doc = {"user_id": uid, "points": 0, "referrals": 0, "last_bonus": None, "joined_at": datetime.utcnow()}
         users.insert_one(doc)
     return doc
 
-def update_user_info(user):
-    if users:
-        users.update_one({"user_id": user.id}, {"$set": {"username": user.username, "first_name": user.first_name}}, upsert=True)
-
-async def is_joined_all(uid, context):
-    for ch in REQUIRED_CHANNELS:
+async def is_joined(uid, context):
+    for ch in CHANNELS:
         try:
-            mem = await context.bot.get_chat_member(f"@{ch}", uid)
-            if mem.status in ("left", "kicked"):
-                return False
-        except:
-            return False
+            m = await context.bot.get_chat_member(f"@{ch}", uid)
+            if m.status in ("left", "kicked"): return False
+        except: return False
     return True
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    uid = user.id
-    update_user_info(user)
-    if context.args and users:
+    u = update.effective_user
+    if context.args and db:
         try:
-            ref_id = int(context.args[0].replace("ref_", ""))
-            if ref_id != uid and users.find_one({"user_id": ref_id}) and not users.find_one({"user_id": uid}):
-                users.update_one({"user_id": ref_id}, {"$inc": {"points": 1, "referrals": 1}})
-                users.insert_one({"user_id": uid, "points": 1, "referrals": 0, "referred_by": ref_id, "joined_at": datetime.utcnow()})
-        except:
-            pass
-    if not await is_joined_all(uid, context):
-        keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch}")] for ch in REQUIRED_CHANNELS]
-        keyboard.append([InlineKeyboardButton("Verify Joined", callback_data="verify")])
-        await update.message.reply_text("Join all channels to use the bot", reply_markup=InlineKeyboardMarkup(keyboard))
+            ref = int(context.args[0].replace("ref_",""))
+            if ref != u.id and users.find_one({"user_id": ref}) and not users.find_one({"user_id": u.id}):
+                users.update_one({"user_id": ref}, {"$inc": {"points": 1, "referrals": 1}})
+                users.insert_one({"user_id": u.id, "points": 1, "referrals": 0, "referred_by": ref})
+        except: pass
+    
+    if not await is_joined(u.id, context):
+        kb = [[InlineKeyboardButton("JOIN", url=f"https://t.me/{c}")] for c in CHANNELS]
+        kb.append([InlineKeyboardButton("VERIFY", callback_data="verify")])
+        await update.message.reply_text("Join all channels first", reply_markup=InlineKeyboardMarkup(kb))
         return
-    keyboard = [
-        [InlineKeyboardButton("Start 2 Hours Attack", callback_data="bomb")],
-        [InlineKeyboardButton("Refer", callback_data="refer"), InlineKeyboardButton("My Stats", callback_data="stats")],
-        [InlineKeyboardButton("Buy Points", callback_data="buy_points"), InlineKeyboardButton("Daily Bonus", callback_data="bonus")],
+    
+    kb = [
+        [InlineKeyboardButton("30 Min Attack", callback_data="mode_30"), InlineKeyboardButton("1 Hour Attack", callback_data="mode_60")],
+        [InlineKeyboardButton("2 Hours Attack", callback_data="mode_120"), InlineKeyboardButton("4 Hours Attack", callback_data="mode_240")],
+        [InlineKeyboardButton("My Stats", callback_data="stats"), InlineKeyboardButton("History", callback_data="history")],
+        [InlineKeyboardButton("Refer", callback_data="refer"), InlineKeyboardButton("Daily Bonus", callback_data="bonus")],
         [InlineKeyboardButton("Top 10", callback_data="top")]
     ]
-    if uid in ADMINS:
-        keyboard.append([InlineKeyboardButton("Admin Panel", callback_data="admin")])
-    await update.message.reply_text("KaaL Bomber - 2 Hours Nuclear Attack\n\nSend 10 digit number after clicking button", reply_markup=InlineKeyboardMarkup(keyboard))
+    if u.id in ADM: kb.append([InlineKeyboardButton("Admin Panel", callback_data="admin")])
+    await update.message.reply_text("Ultra Advanced KaaL Bomber Ready", reply_markup=InlineKeyboardMarkup(kb))
 
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    uid = query.from_user.id
-    update_user_info(query.from_user)
-    if query.data == "verify":
-        if await is_joined_all(uid, context):
-            await query.edit_message_text("Verified Successfully! /start")
-        else:
-            await query.edit_message_text("Join all channels first")
+async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    data = q.data
+
+    if data == "verify":
+        await q.edit_message_text("Verified! /start" if await is_joined(uid, context) else "Join all channels")
         return
-    if query.data == "bomb":
-        if get_user_doc(uid).get("points", 0) < 1:
-            await query.edit_message_text("You need at least 1 point")
+
+    if data.startswith("mode_"):
+        mins = int(data.split("_")[1])
+        if get_user(uid).get("points",0) < 1:
+            await q.edit_message_text("Need 1 point")
             return
+        attack_mode[uid] = mins
         user_state[uid] = "awaiting_number"
-        await query.edit_message_text("Send 10 digit number:")
+        await q.edit_message_text(f"Selected {mins} min attack\nSend 10 digit number")
         return
-    if query.data == "refer":
-        bot = await context.bot.get_me()
-        link = f"https://t.me/{bot.username}?start=ref_{uid}"
-        await query.edit_message_text(f"Refers: {get_user_doc(uid).get('referrals', 0)}\n\nYour Link:\n{link}")
-        return
-    if query.data == "stats":
-        doc = get_user_doc(uid)
-        await query.edit_message_text(f"Points: {doc.get('points', 0)}")
-        return
-    if query.data == "top":
-        if not users:
-            await query.edit_message_text("DB Error")
+
+    if data == "history":
+        hist = list(attacks.find({"user_id": uid}).sort("time", -1).limit(5))
+        if not hist:
+            await q.edit_message_text("No attack history")
             return
-        top_users = users.find().sort("points", -1).limit(10)
-        text = "Top 10 Users\n\n"
-        for i, u in enumerate(top_users, 1):
-            name = f"@{u.get('username', '')}" if u.get('username') else u.get('first_name', 'User')
-            text += f"{i}. {name} → {u.get('points', 0)} pts\n"
-        await query.edit_message_text(text)
+        txt = "Last 5 Attacks\n\n"
+        for a in hist:
+            txt += f"{a['target']} → {a['duration']} min ({a['time'].strftime('%d/%m %H:%M')})\n"
+        await q.edit_message_text(txt)
         return
-    if query.data == "bonus":
-        doc = users.find_one({"user_id": uid}) if users else {}
+
+    if data == "stats":
+        doc = get_user(uid)
+        await q.edit_message_text(f"Points: {doc.get('points',0)}\nRefers: {doc.get('referrals',0)}")
+        return
+
+    if data == "top":
+        text = "Top 10 Warriors\n\n"
+        for i, u in enumerate(users.find().sort("points", -1).limit(10), 1):
+            name = f"@{u.get('username')}" if u.get('username') else (u.get('first_name') or "User")
+            text += f"{i}. {name} → {u.get('points',0)} pts\n"
+        await q.edit_message_text(text)
+        return
+
+    if data == "bonus":
+        doc = users.find_one({"user_id": uid})
         if doc and doc.get("last_bonus") and (datetime.utcnow() - doc["last_bonus"]) < timedelta(hours=24):
-            await query.edit_message_text("Already claimed today")
+            await q.edit_message_text("Already claimed today")
             return
         users.update_one({"user_id": uid}, {"$inc": {"points": 2}, "$set": {"last_bonus": datetime.utcnow()}}, upsert=True)
-        await query.edit_message_text("+2 Points Added")
+        await q.edit_message_text("+2 Points Added")
         return
-    if query.data == "buy_points":
-        await query.message.reply_text("Contact @Undefeatable_Vikash77")
+
+    if data == "admin" and uid in ADM:
+        await q.edit_message_text("/broadcast text\n/ban id\n/unban id\n/addcredits id amount")
         return
-    if query.data == "admin" and uid in ADMINS:
-        await query.edit_message_text("/addcredits <id> <amount>")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text.strip()
+
+    if banned.find_one({"user_id": uid}):
+        await update.message.reply_text("You are banned")
+        return
+
     if user_state.get(uid) == "awaiting_number":
         if not text.isdigit() or len(text) != 10:
             await update.message.reply_text("Invalid number")
             return
-        try:
-            users.update_one({"user_id": uid}, {"$inc": {"points": -1}})
-        except:
-            pass
+        mins = attack_mode.get(uid, 120)
+        users.update_one({"user_id": uid}, {"$inc": {"points": -1}})
         user_state.pop(uid, None)
-        msg = await update.message.reply_text(f"2 HOURS ATTACK STARTED\nTarget: {text}\nProgress: 0%")
-        stages = [(300,"Launching..."),(600,"Dark Servers..."),(1020,"Bypassing..."),(1500,"SMS Flood..."),(2100,"Call Flood..."),(2700,"Heating Device..."),(3300,"Network Down..."),(3900,"Restart Loop..."),(4500,"Battery Dead..."),(5100,"Hanging..."),(5700,"Black Screen..."),(6600,"Final Wave..."),(7200,"TARGET DESTROYED")]
+        attack_mode.pop(uid, None)
+
+        msg = await update.message.reply_text(f"{mins} MIN ATTACK STARTED\nTarget → {text}")
+        attacks.insert_one({"user_id": uid, "target": text, "duration": mins, "time": datetime.utcnow()})
+
+        total_sec = mins * 60
+        stages = 12
         elapsed = 0
-        for t, status in stages:
-            await asyncio.sleep(t - elapsed)
-            elapsed = t
-            perc = int(elapsed/72)
+        for sec, status in stages:
+            await asyncio.sleep(sec - elapsed)
+            elapsed = sec
+            perc = int(elapsed / total_sec * 100)
             bar = "█"*(perc//10) + "░"*(10-perc//10)
             try:
-                await msg.edit_text(f"2 HOURS ATTACK RUNNING\nTarget: {text}\nElapsed: {elapsed//60}m\nStatus: {status}\n{perc}% {bar}")
-            except:
-                pass
-        await msg.edit_text(f"ATTACK COMPLETED\nTarget: {text}\nDevice: DEAD / BRICKED\nMade with Indian Power")
+                await msg.edit_text(f"{mins} MIN ATTACK RUNNING\nTarget → {text}\nStatus → {status}\n{perc}% {bar}")
+            except: pass
+
+        pdf_buffer = BytesIO()
+        pdf_buffer.write(f"KaaL Bomber Attack Report\n\nTarget: {text}\nDuration: {mins} minutes\nTime: {datetime.utcnow().strftime('%d/%m/%Y %H:%M UTC')}\nStatus: SUCCESSFULLY DESTROYED".encode())
+        pdf_buffer.seek(0)
+        await msg.edit_text("ATTACK COMPLETED - Device Destroyed")
+        await update.message.reply_document(InputFile(pdf_buffer, filename=f"Attack_Report_{text}.txt"), caption="Your Attack Report")
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADM: return
+    message = " ".join(context.args)
+    if not message: 
+        await update.message.reply_text("Usage: /broadcast text")
         return
-    elif text.isdigit() and len(text) == 10:
-        await update.message.reply_text("Click button first")
+    sent = 0
+    for u in users.find({}, {"user_id": 1}):
+        try:
+            await context.bot.send_message(u["user_id"], message)
+            sent += 1
+            await asyncio.sleep(0.05)
+        except: pass
+    await update.message.reply_text(f"Broadcast sent to {sent} users")
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = get_user_doc(update.effective_user.id)
-    await update.message.reply_text(f"Points: {doc.get('points', 0)}")
-
-async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    bot = await context.bot.get_me()
-    link = f"https://t.me/{bot.username}?start=ref_{update.effective_user.id}"
-    await update.message.reply_text(f"Your Link:\n{link}")
-
-async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not users:
-        await update.message.reply_text("DB Error")
-        return
-    top_users = users.find().sort("points", -1).limit(10)
-    text = "Top 10 Users\n\n"
-    for i, u in enumerate(top_users, 1):
-        name = f"@{u.get('username', '')}" if u.get('username') else u.get('first_name', 'User')
-        text += f"{i}. {name} → {u.get('points', 0)} pts\n"
-    await update.message.reply_text(text)
-
-async def addcredits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMINS:
-        return
+async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADM: return
     try:
         uid = int(context.args[0])
-        amt = int(context.args[1])
-        users.update_one({"user_id": uid}, {"$inc": {"points": amt}})
-        await update.message.reply_text("Done")
-    except:
-        await update.message.reply_text("Usage: /addcredits id amount")
+        banned.update_one({"user_id": uid}, {"$set": {"user_id": uid}}, upsert=True)
+        await update.message.reply_text("User banned")
+    except: await update.message.reply_text("Usage: /ban id")
+
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADM: return
+    try:
+        uid = int(context.args[0])
+        banned.delete_one({"user_id": uid})
+        await update.message.reply_text("User unbanned")
+    except: await update.message.reply_text("Usage: /unban id")
 
 if __name__ == "__main__":
     Thread(target=run_flask, daemon=True).start()
-    if not BOT_TOKEN:
-        exit()
-    application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("stats", stats))
-    application.add_handler(CommandHandler("refer", refer))
-    application.add_handler(CommandHandler("top", top))
-    application.add_handler(CommandHandler("addcredits", addcredits))
-    application.add_handler(CallbackQueryHandler(callback_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    application.run_polling(drop_pending_updates=True, poll_interval=1.0, timeout=30, read_timeout=40, write_timeout=40, connect_timeout=40, pool_timeout=40)
+    if not BOT_TOKEN: exit()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("ban", ban))
+    app.add_handler(CommandHandler("unban", unban))
+    app.add_handler(CallbackQueryHandler(callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.run_polling(drop_pending_updates=True)
